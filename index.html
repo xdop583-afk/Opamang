@@ -9,7 +9,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --bg:#1B1310;
@@ -706,15 +705,45 @@ function withTimeout(promise, ms=8000){
   ]);
 }
 
+// --- Firestore via plain REST API (not the SDK's streaming/WebChannel client) ---
+// Some networks silently block Firestore's streaming protocol while allowing normal
+// HTTPS requests through fine. Talking to the REST endpoint directly with fetch()
+// looks like any ordinary API call and avoids that class of problem entirely.
+function firestoreDocUrl(uid,key){
+  return `https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/(default)/documents/users/${uid}/records/${encodeURIComponent(key)}`;
+}
+async function firestoreGetREST(uid,key,idToken){
+  const res = await fetch(firestoreDocUrl(uid,key), {
+    headers:{ Authorization:'Bearer '+idToken }
+  });
+  if(res.status===404) return null;
+  if(!res.ok) throw new Error('http '+res.status);
+  const data = await res.json();
+  const value = data.fields && data.fields.value && data.fields.value.stringValue;
+  return value!==undefined ? {value} : null;
+}
+async function firestoreSetREST(uid,key,valueStr,idToken){
+  const url = firestoreDocUrl(uid,key)+'?updateMask.fieldPaths=value&updateMask.fieldPaths=updatedAt';
+  const body = { fields:{ value:{stringValue:valueStr}, updatedAt:{integerValue:String(Date.now())} } };
+  const res = await fetch(url,{
+    method:'PATCH',
+    headers:{ 'Content-Type':'application/json', Authorization:'Bearer '+idToken },
+    body: JSON.stringify(body)
+  });
+  if(!res.ok) throw new Error('http '+res.status);
+  return true;
+}
+
 // Storage priority: Firebase (if configured) -> Claude.ai window.storage (if running as an
 // artifact) -> browser localStorage (fallback so the app still works standalone).
 // Every Firestore call is wrapped with a timeout so the app can never hang forever
 // waiting on a stuck network/browser connection.
 async function storageGet(key){
-  if(FIREBASE_ENABLED && fbDb && currentUser){
+  if(FIREBASE_ENABLED && currentUser){
     try{
-      const snap = await withTimeout(fbDb.collection('users').doc(currentUser.uid).collection('records').doc(key).get());
-      return snap.exists ? {value:snap.data().value} : null;
+      const idToken = await withTimeout(currentUser.getIdToken());
+      const res = await withTimeout(firestoreGetREST(currentUser.uid,key,idToken));
+      return res;
     }catch(e){
       console.error('storageGet failed for',key,e);
       const code = e && e.code ? e.code : (e && e.message ? e.message : 'unknown');
@@ -731,9 +760,10 @@ async function storageGet(key){
   }catch(e){ return null; }
 }
 async function storageSet(key,value){
-  if(FIREBASE_ENABLED && fbDb && currentUser){
+  if(FIREBASE_ENABLED && currentUser){
     try{
-      await withTimeout(fbDb.collection('users').doc(currentUser.uid).collection('records').doc(key).set({value, updatedAt:Date.now()}));
+      const idToken = await withTimeout(currentUser.getIdToken());
+      await withTimeout(firestoreSetREST(currentUser.uid,key,value,idToken));
       return {value};
     }catch(e){
       console.error('storageSet failed for',key,e);
@@ -1497,13 +1527,10 @@ function initFirebase(){
   setDebug('جاري الاتصال بـ Firebase...');
   fbApp = firebase.initializeApp(FIREBASE_CONFIG);
   fbAuth = firebase.auth();
-  fbDb = firebase.firestore();
-  // Some mobile networks / proxies / firewalls block Firestore's default streaming
-  // connection while allowing Auth through fine. Auto-detecting long-polling fixes
-  // that class of "hangs forever with no error" connectivity issues.
-  try{
-    fbDb.settings({ experimentalForceLongPolling: true, useFetchStreams: false });
-  }catch(e){ console.warn('firestore settings could not be applied', e); }
+  // Note: we deliberately do NOT use firebase.firestore() (the streaming SDK client).
+  // Data reads/writes go through the plain Firestore REST API instead (see
+  // firestoreGetREST/firestoreSetREST above), which is more reliable on networks
+  // that block Firestore's WebChannel/streaming protocol.
   setDebug('بانتظار حالة تسجيل الدخول...');
 
   document.getElementById('loginForm').addEventListener('submit', async e=>{
