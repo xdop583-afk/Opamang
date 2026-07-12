@@ -349,7 +349,7 @@ let sidebarOpen = false;
 ========================================================= */
 // عطّل هذا السطر (خليه true) لإيقاف Firebase مؤقتاً والعمل محلياً فقط —
 // غيّره إلى false لاحقاً إذا حبيت تعيد تفعيل المزامنة السحابية.
-const DISABLE_FIREBASE = true;
+const DISABLE_FIREBASE = false;
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyAnGsOLX9Qe6oNHHJzZHLmSKf3C_8IGPLg",
@@ -862,6 +862,7 @@ function renderTab(key){
   if(key==='dashboard'){renderDashboard();return;}
   if(key==='tasks'){renderTasks();return;}
   if(key==='finance'){renderFinanceModule();return;}
+  if(key==='employees'){renderEmployeesModule();return;}
   renderGenericModule(key);
 }
 
@@ -1075,6 +1076,72 @@ async function onDropTask(e,status){
   e.currentTarget.classList.remove('dragover');
   const id=e.dataTransfer.getData('text/plain');
   await moveTask(id,status);
+}
+
+/* =========================================================
+   EMPLOYEES MODULE (extended with a real full-size chart)
+========================================================= */
+let __employeeAttendanceChart=null, __employeeSalaryBarChart=null;
+
+function renderEmployeesModule(){
+  renderGenericModule('employees'); // builds the base CRUD table first
+  const panel = document.getElementById('panel-employees');
+  const employees = state.employees||[];
+
+  const chartsHtml = `
+    <div class="grid grid-2" style="margin-top:20px;">
+      <div class="card">
+        <h3 class="card-title">نسبة حضور كل موظف <small>من إجمالي سجلات الحضور المسجّلة</small></h3>
+        <div class="chart-box" style="height:280px;"><canvas id="employeeAttendanceChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">مقارنة الرواتب بين الموظفين</h3>
+        <div class="chart-box" style="height:280px;"><canvas id="employeeSalaryBarChart"></canvas></div>
+      </div>
+    </div>
+  `;
+  panel.insertAdjacentHTML('beforeend', chartsHtml);
+
+  if(typeof Chart==='undefined' || employees.length===0) return;
+
+  const names = employees.map(e=>e.name);
+  const rates = employees.map(e=>{
+    const series=employeeAttendanceSeries(e.id,100); // use full history for an accurate rate
+    if(!series.length) return 0;
+    return Math.round((series.reduce((a,b)=>a+b,0)/series.length)*100);
+  });
+  const barColors = rates.map(r=> r>=80?'#7FA687' : r>=50?'#C9973F' : '#D9694B');
+
+  if(__employeeAttendanceChart) __employeeAttendanceChart.destroy();
+  __employeeAttendanceChart = new Chart(document.getElementById('employeeAttendanceChart'),{
+    type:'bar',
+    data:{labels:names,datasets:[{label:'نسبة الحضور %',data:rates,backgroundColor:barColors,borderRadius:6}]},
+    options:{
+      indexAxis:'y',
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{min:0,max:100,ticks:{color:'#B8A392',callback:v=>v+'%'},grid:{color:'#3A2A20'}},
+        y:{ticks:{color:'#B8A392',font:{family:'Tajawal'}},grid:{display:false}}
+      }
+    }
+  });
+
+  const salaries = employees.map(e=>Number(e.salary||0));
+  if(__employeeSalaryBarChart) __employeeSalaryBarChart.destroy();
+  __employeeSalaryBarChart = new Chart(document.getElementById('employeeSalaryBarChart'),{
+    type:'bar',
+    data:{labels:names,datasets:[{label:'الراتب (ر.س)',data:salaries,backgroundColor:'#7BA7BC',borderRadius:6}]},
+    options:{
+      indexAxis:'y',
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{ticks:{color:'#B8A392'},grid:{color:'#3A2A20'}},
+        y:{ticks:{color:'#B8A392',font:{family:'Tajawal'}},grid:{display:false}}
+      }
+    }
+  });
 }
 
 /* =========================================================
